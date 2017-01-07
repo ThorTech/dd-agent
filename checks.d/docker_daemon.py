@@ -657,9 +657,9 @@ class DockerDaemon(AgentCheck):
 
     def _get_events(self):
         """Get the list of events."""
-        events, changed_container_ids = self.docker_util.get_events()
-        if changed_container_ids and self._service_discovery:
-            get_sd_backend(self.agentConfig).update_checks(changed_container_ids)
+        events, changed_containers = self.docker_util.get_events()
+        if any(changed_containers.values()) and self._service_discovery:
+            get_sd_backend(self.agentConfig).update_checks(changed_containers)
         return events
 
     def _pre_aggregate_events(self, api_events, containers_by_id):

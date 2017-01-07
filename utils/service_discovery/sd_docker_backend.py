@@ -17,6 +17,8 @@ from utils.service_discovery.abstract_sd_backend import AbstractSDBackend
 from utils.service_discovery.config_stores import get_config_store
 
 DATADOG_ID = 'com.datadoghq.sd.check.id'
+NEW_CONTAINERS = 'new_containers'
+STOPPED_CONTAINERS = 'stopped_containers'
 log = logging.getLogger(__name__)
 
 
@@ -66,6 +68,12 @@ class _SDDockerBackendConfigFetchState(object):
                     return pod.get(key, {})
         return {}
 
+    def remove_from_cache(self, c_id):
+        try:
+            del self.inspect_cache[c_id]
+        except KeyError:
+            pass
+
 
 class SDDockerBackend(AbstractSDBackend):
     """Docker-based service discovery"""
@@ -100,7 +108,23 @@ class SDDockerBackend(AbstractSDBackend):
         state = self._make_fetch_state()
 
         conf_reload_set = set()
-        for c_id in changed_containers:
+
+        # for stopped containers:
+        # - if auto_conf only and in k8s, trigger a full reload as we can't tell which check is concerned
+        #   (its template could be in annotations)
+        # - else get its identifier, retrieve its checks and remove it from the inspect cache
+        for c_id in changed_containers[STOPPED_CONTAINERS]:
+            if Platform.is_k8s() and not self.agentConfig.get('sd_config_backend'):
+                self.reload_check_configs = True
+                return
+            else:
+                checks = self._get_checks_to_refresh(state, c_id)
+                if checks:
+                    conf_reload_set.update(set(checks))
+                state.remove_from_cache(c_id)
+
+        # for new containers, look for checks that apply
+        for c_id in changed_containers[NEW_CONTAINERS]:
             checks = self._get_checks_to_refresh(state, c_id)
             if checks:
                 conf_reload_set.update(set(checks))
@@ -113,12 +137,11 @@ class SDDockerBackend(AbstractSDBackend):
         Use the DATADOG_ID label or the image."""
         inspect = state.inspect_container(c_id)
 
-        # if the container was removed we can't tell which check is concerned
-        # so we have to reload everything
-        # TODO: with the cache it's not needed anymore
-        # but the cache never purges dead containers, this should be improved
+        # this can only happen for containers that are not monitored and were deleted
+        # because monitored containers inspects are cached
+        # except in auto_conf only mode on k8s in which case this method
+        # should not be called.
         if not inspect:
-            self.reload_check_configs = True
             return
 
         identifier = inspect.get('Config', {}).get('Labels', {}).get(DATADOG_ID) or \
@@ -343,7 +366,6 @@ class SDDockerBackend(AbstractSDBackend):
         templates = []
         if config_backend is None:
             auto_conf = True
-            log.warning('No supported configuration backend was provided, using auto-config only.')
         else:
             auto_conf = False
 

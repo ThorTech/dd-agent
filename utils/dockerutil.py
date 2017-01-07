@@ -19,6 +19,9 @@ from utils.singleton import Singleton
 
 DATADOG_ID = 'com.datadoghq.sd.check.id'
 
+# used to store updated container ids by state
+NEW_CONTAINERS = 'new_containers'
+STOPPED_CONTAINERS = 'stopped_containers'
 
 class MountException(Exception):
     pass
@@ -31,8 +34,10 @@ class CGroupException(Exception):
 DEFAULT_TIMEOUT = 5
 DEFAULT_VERSION = 'auto'
 CHECK_NAME = 'docker_daemon'
-CONFIG_RELOAD_STATUS = ['start', 'die', 'stop', 'kill']  # used to trigger service discovery
 
+# used to trigger service discovery
+NEW_CONTAINER_STATUS = ['start']
+STOP_CONTAINER_STATUS = ['die', 'stop', 'kill']
 DEFAULT_CONTAINER_EXCLUDE = ["docker_image:gcr.io/google_containers/pause.*"]
 
 log = logging.getLogger(__name__)
@@ -122,7 +127,10 @@ class DockerUtil:
 
     def get_events(self):
         self.events = []
-        changed_container_ids = set()
+        changed_containers = {
+            NEW_CONTAINERS: set(),
+            STOPPED_CONTAINERS: set()
+        }
         now = int(time.time())
 
         event_generator = self.client.events(since=self._latest_event_collection_ts,
@@ -136,10 +144,13 @@ class DockerUtil:
                 log.debug('Unable to parse Docker event: %s', event)
                 continue
 
-            if event.get('status') in CONFIG_RELOAD_STATUS:
-                changed_container_ids.add(event.get('id'))
+            if event.get('status') in STOP_CONTAINER_STATUS:
+                changed_containers[STOPPED_CONTAINERS].add(event.get('id'))
+            elif event.get('status') in NEW_CONTAINER_STATUS:
+                changed_containers[NEW_CONTAINERS].add(event.get('id'))
+
             self.events.append(event)
-        return self.events, changed_container_ids
+        return self.events, changed_containers
 
     @classmethod
     def get_gateway(cls, proc_prefix=""):
